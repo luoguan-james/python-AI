@@ -20,6 +20,11 @@ app.include_router(queue_router, prefix="/api/v1/queue", tags=["消息队列"])
 
 # Register exception handlers
 app.add_exception_handler(DomainException, domain_exception_handler)
+app.include_router(user_router, prefix="/api/v1/users", tags=["用户"])
+app.include_router(queue_router, prefix="/api/v1/queue", tags=["消息队列"])
+
+# Register exception handlers
+app.add_exception_handler(DomainException, domain_exception_handler)
 app.add_exception_handler(Exception, generic_exception_handler)
 
 
