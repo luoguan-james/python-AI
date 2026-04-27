@@ -354,13 +354,13 @@ async def get_queue_stats(
     Args:
         queue_service: 队列服务实例
         current_user: 当前认证用户
-
-    Returns:
         QueueStatsResponse: 队列统计信息
     """
-    stats = queue_service.get_stats()
+    from src.api.services.queue_service import QueueMonitor
+    monitor = QueueMonitor(queue_service)  # type: ignore[abstract]
+    stats = monitor.get_stats()
     return QueueStatsResponse(
-        total_sent=stats.total_sent,
+        pending_count=stats.pending_count,
         total_received=stats.total_received,
         total_acked=stats.total_acked,
         total_nacked=stats.total_nacked,
@@ -577,13 +577,13 @@ async def queue_health(
             "error": str(e),
         }
 # -*- coding: utf-8 -*-
-
-"""
-队列控制器
-
-提供消息队列的 RESTful API 端点，支持消息的发送、接收、确认、拒绝、
-批量操作以及队列监控管理。
-"""
+    """
+    try:
+        from src.api.services.queue_service import QueueMonitor
+        monitor = QueueMonitor(queue_service)  # type: ignore[abstract]
+        health = monitor.health_check()
+        return health
+    except Exception as e:
 
 from typing import Any, Dict, List, Optional
 

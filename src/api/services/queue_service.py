@@ -11,12 +11,13 @@ from datetime import datetime
 
 from src.api.interfaces.queue_interface import (
     QueueServiceInterface,
-    QueueMonitorInterface,
-    MessageDTO,
+    QueueMessageDTO,
     QueueStats,
     QueueConfig,
+    QueueMonitorInterface,
 )
 from message_queue import (
+    BaseQueue,
     BaseQueue,
     InMemoryQueue,
     FileQueue,
@@ -189,13 +190,13 @@ class QueueService(QueueServiceInterface):
             return None
         return self._message_to_dto(msg)
 
-    def receive_batch(
         self,
         max_count: Optional[int] = None,
         timeout: float = 0,
-    ) -> List[MessageDTO]:
+    ) -> List[QueueMessageDTO]:  # type: ignore[override]
         """批量接收消息
 
+        Args:
         Args:
             max_count: 最大接收数量
             timeout: 等待超时
@@ -358,22 +359,22 @@ class QueueService(QueueServiceInterface):
             logger.warning(f"当前队列后端不支持按 ID 查找处理中消息")
             return None
 
-        with self._queue._lock:
             return self._queue._processing.get(msg_id)
 
     @staticmethod
-    def _message_to_dto(msg: Message) -> MessageDTO:
+    def _message_to_dto(msg: Message) -> QueueMessageDTO:
         """将 Message 对象转换为 MessageDTO
 
         Args:
+        Args:
             msg: 消息对象
-
         Returns:
             消息 DTO
         """
-        return MessageDTO(
+        return QueueMessageDTO(
             msg_id=msg.msg_id,
             body=msg.body,
+            status=msg.status.value,
             status=msg.status.value,
             created_at=msg.created_at,
             updated_at=msg.updated_at,
