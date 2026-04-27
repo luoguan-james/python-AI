@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pyo
+node_modules/
+.next/
+dist/
+venv/
+.venv/
+.pytest_cache/
+.mypy_cache/
+*.egg-info/
+.tox/
+*.lock
+package-lock.json
