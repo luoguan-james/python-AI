@@ -226,6 +226,31 @@ class QueueMonitorInterface(ABC):
             dict: 包含健康状态、运行时长、告警信息等
         """
         ...
+
+
+class QueueMonitorInterface(ABC):
+    """队列监控接口
+
+    提供队列运行状态、统计信息、健康检查等监控能力。
+    """
+
+    @abstractmethod
+    def get_stats(self) -> QueueStats:
+        """获取队列统计信息。
+
+        Returns:
+            QueueStats: 包含待处理、处理中、已完成、失败消息数量等信息
+        """
+        ...
+
+    @abstractmethod
+    def health_check(self) -> Dict[str, Any]:
+        """健康检查。
+
+        Returns:
+            dict: 包含健康状态、运行时长、告警信息等
+        """
+        ...
             QueueFullError: 队列已满时抛出
         """
         ...
