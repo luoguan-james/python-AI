@@ -2532,6 +2532,654 @@ null
   "status_code": 400
 }
 ```
+| 函数 | 说明 |
+|------|------|
+| `create_item(item_type, **kwargs)` | 工厂方法创建 Item |
+| `merge_items(base, override)` | 合并两个 Item |
+| `batch_validate(items)` | 批量验证 |
+| `deduplicate_items(items, key_field)` | 去重 |
+| `filter_items(items, **conditions)` | 过滤 |
+| `sort_items(items, key_field, reverse)` | 排序 |
+| `export_items_json(items, filepath)` | 导出为 JSON |
+| `export_items_csv(items, filepath)` | 导出为 CSV |
+
+---
+
+## 6. 错误码说明
+
+| HTTP 状态码 | 说明 | 常见原因 |
+|-------------|------|----------|
+| `200` | 请求成功 | - |
+| `201` | 创建成功 | 用户创建 |
+| `400` | 请求参数错误 | 消息格式无效、队列已满、配置参数无效 |
+| `401` | 未认证 | Token 缺失或无效 |
+| `404` | 资源不存在 | 用户/消息不存在 |
+| `409` | 资源冲突 | 用户名已存在 |
+| `422` | 请求体验证失败 | 字段类型错误、缺少必填字段 |
+| `500` | 服务器内部错误 | 未预期的异常 |
+| `503` | 服务不可用 | 队列服务异常 |
+
+### 统一错误响应格式
+
+```json
+{
+  "detail": "错误描述信息"
+}
+```
+
+对于领域异常，格式为：
+```json
+{
+  "error": "DOMAIN_ERROR",
+  "message": "错误描述",
+  "status_code": 400
+}
+```
+
+---
+
+## 7. 附录：消息队列架构
+
+### 7.1 队列后端对比
+
+| 特性 | InMemoryQueue | FileQueue | RedisQueue |
+|------|---------------|-----------|------------|
+| 数据持久化 | ❌ | ✅ (JSON 文件) | ✅ (Redis) |
+| 进程间通信 | ❌ | ✅ (文件锁) | ✅ (网络) |
+| 分布式支持 | ❌ | ❌ | ✅ |
+| 性能 | ⚡ 极高 | 🐢 中等 | 🚀 高 |
+| 适用场景 | 单进程测试/开发 | 开发/小规模生产 | 生产环境 |
+| 消息上限 | 内存限制 | 磁盘限制 | Redis 内存限制 |
+
+### 7.2 消息生命周期
+
+```
+发送 → PENDING → 接收 → PROCESSING → ACK → COMPLETED
+                              ↓
+                           NACK → 重试 → PENDING (循环)
+                              ↓
+                           超过重试次数 → FAILED
+```
+
+### 7.3 消息状态说明
+
+| 状态 | 说明 |
+|------|------|
+| `PENDING` | 待处理，在队列中等待消费者接收 |
+| `PROCESSING` | 处理中，已被消费者取出正在处理 |
+| `COMPLETED` | 已完成，处理成功 |
+| `FAILED` | 失败，超过最大重试次数 |
+| `RETRY` | 待重试，即将重新入队 |
+
+### 7.4 优先级机制
+
+消息支持优先级（`priority` 字段），数值越大优先级越高。队列内部按优先级降序排列，高优先级的消息会被优先消费。
+
+```python
+# 高优先级消息（优先处理）
+{"body": "紧急任务", "priority": 10}
+
+# 普通消息
+{"body": "普通任务", "priority": 0}
+
+# 低优先级消息
+{"body": "后台任务", "priority": -5}
+```
+
+### 7.5 重试机制
+
+消息处理失败（NACK）时，如果 `requeue=true` 且重试次数未超过 `max_retries`，消息会重新入队等待再次处理。超过最大重试次数后，消息标记为 `FAILED`。
+
+### 7.6 线程安全
+
+`InMemoryQueue` 使用 `threading.Lock` 和 `Condition` 实现线程安全的生产者-消费者模式，支持多线程并发发送和接收。
+
+### 7.7 文件队列持久化
+
+`FileQueue` 将消息存储为独立的 JSON 文件，目录结构：
+```
+/tmp/message_queue/
+├── pending/       # 待处理消息
+├── processing/    # 处理中消息
+├── completed/     # 已完成消息
+└── failed/        # 失败消息
+```
+支持崩溃恢复：启动时自动将 `processing/` 中的消息移回 `pending/`。
+
+### 1.1 用户登录
+
+**端点**: `POST /api/v1/auth/login`
+
+**请求体** (`LoginRequest`):
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `username` | `string` | 是 | 用户名 |
+| `password` | `string` | 是 | 密码 |
+
+**请求示例**:
+```json
+{
+  "username": "admin",
+  "password": "123456"
+}
+```
+
+**响应** (`LoginResponse`):
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `access_token` | `string` | JWT 访问令牌 |
+| `token_type` | `string` | 令牌类型（固定为 `bearer`） |
+| `expires_in` | `int` | 过期时间（秒） |
+
+**成功响应示例** (200):
+```json
+{
+  "access_token": "eyJhbGciOiJIUzI1NiIs...",
+  "token_type": "bearer",
+  "expires_in": 3600
+}
+```
+
+**错误响应示例** (401):
+```json
+{
+  "detail": "用户名或密码错误"
+}
+```
+
+---
+
+## 2. 用户管理 API
+
+### 2.1 获取用户信息
+
+**端点**: `GET /api/v1/users/{user_id}`
+
+**路径参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `user_id` | `int` | 是 | 用户 ID |
+
+**请求头**:
+| 头 | 值 | 必填 |
+|----|-----|------|
+| `Authorization` | `Bearer <token>` | 是 |
+
+**成功响应示例** (200):
+```json
+{
+  "id": 1,
+  "username": "admin",
+  "email": "admin@example.com",
+  "created_at": "2024-01-01T00:00:00"
+}
+```
+
+**错误响应示例** (404):
+```json
+{
+  "detail": "用户不存在"
+}
+```
+
+### 2.2 创建用户
+
+**端点**: `POST /api/v1/users`
+
+**请求体** (`CreateUserRequest`):
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `username` | `string` | 是 | 用户名（唯一） |
+| `email` | `string` | 是 | 电子邮箱 |
+| `password` | `string` | 是 | 密码 |
+
+**请求示例**:
+```json
+{
+  "username": "newuser",
+  "email": "newuser@example.com",
+  "password": "securepass123"
+}
+```
+
+**成功响应示例** (201):
+```json
+{
+  "id": 2,
+  "username": "newuser",
+  "email": "newuser@example.com",
+  "created_at": "2024-06-15T10:30:00"
+}
+```
+
+**错误响应示例** (409):
+```json
+{
+  "detail": "用户名已存在"
+}
+```
+
+---
+
+## 3. 消息队列 API
+
+### 3.1 发送消息
+
+**端点**: `POST /api/v1/queue/send`
+
+**请求体** (`SendMessageRequest`):
+
+| 字段 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `body` | `any` | 是 | - | 消息内容 |
+| `priority` | `int` | 否 | `0` | 优先级（数值越大优先级越高） |
+| `topic` | `string` | 否 | `null` | 消息主题标签 |
+| `message_id` | `string` | 否 | `null` | 自定义消息 ID |
+| `ttl` | `int` | 否 | `null` | 消息生存时间（秒） |
+
+**请求示例**:
+```json
+{
+  "body": {"url": "https://example.com/page1", "depth": 1},
+  "priority": 5,
+  "topic": "crawl:high"
+}
+```
+
+**成功响应** (200):
+```json
+{
+  "message_id": "msg_abc123",
+  "status": "sent",
+  "queue_size": 42
+}
+```
+
+### 3.2 批量发送消息
+
+**端点**: `POST /api/v1/queue/send_batch`
+
+**请求体** (`BatchSendRequest`):
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `messages` | `array` | 是 | 消息对象数组（每个对象同 SendMessageRequest） |
+
+**请求示例**:
+```json
+{
+  "messages": [
+    {"body": "msg1", "priority": 1},
+    {"body": "msg2", "priority": 2, "topic": "urgent"}
+  ]
+}
+```
+
+**成功响应** (200):
+```json
+{
+  "message_ids": ["msg_001", "msg_002"],
+  "success_count": 2,
+  "failed_count": 0
+}
+```
+
+### 3.3 接收消息
+
+**端点**: `GET /api/v1/queue/receive`
+
+**查询参数**:
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `topic` | `string` | 否 | `null` | 按主题过滤消息 |
+| `timeout` | `float` | 否 | `0.0` | 等待超时时间（秒），0=不等待 |
+
+**成功响应** (200):
+```json
+{
+  "message_id": "msg_abc123",
+  "body": {"url": "https://example.com/page1"},
+  "priority": 5,
+  "topic": "crawl:high",
+  "created_at": "2024-06-15T10:30:00.123456",
+  "retry_count": 0
+}
+```
+
+**空队列响应** (200):
+```json
+null
+```
+
+### 3.4 确认消息
+
+**端点**: `POST /api/v1/queue/ack/{message_id}`
+
+**路径参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `message_id` | `string` | 是 | 消息 ID |
+
+**成功响应** (200):
+```json
+{
+  "status": "acknowledged",
+  "message_id": "msg_abc123"
+}
+```
+
+### 3.5 拒绝消息
+
+**端点**: `POST /api/v1/queue/nack/{message_id}`
+
+**路径参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `message_id` | `string` | 是 | 消息 ID |
+
+**查询参数**:
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `requeue` | `bool` | 否 | `true` | 是否重新入队重试 |
+
+**成功响应** (200):
+```json
+{
+  "status": "nacknowledged",
+  "message_id": "msg_abc123",
+  "requeued": true
+}
+```
+
+### 3.6 队列统计
+
+**端点**: `GET /api/v1/queue/stats`
+
+**成功响应** (200):
+```json
+{
+  "total_sent": 150,
+  "total_received": 145,
+  "total_acked": 140,
+  "total_nacked": 5,
+  "total_failed": 3,
+  "pending_count": 10,
+  "processing_count": 2,
+  "avg_process_time": 0.35,
+  "error_rate": 0.02,
+  "queue_size": 12,
+  "is_running": true
+}
+```
+
+### 3.7 获取队列配置
+
+**端点**: `GET /api/v1/queue/config`
+
+**成功响应** (200):
+```json
+{
+  "backend": "memory",
+  "maxsize": 10000,
+  "max_retries": 3,
+  "retry_delay": 5,
+  "batch_size": 10,
+  "auto_start": false
+}
+```
+
+### 3.8 更新队列配置
+
+**端点**: `PUT /api/v1/queue/config`
+
+**请求体** (`QueueConfig`):
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `backend` | `string` | 否 | 后端类型（memory/file/redis） |
+| `maxsize` | `int` | 否 | 队列最大容量 |
+| `max_retries` | `int` | 否 | 最大重试次数 |
+| `retry_delay` | `int` | 否 | 重试延迟（秒） |
+| `batch_size` | `int` | 否 | 批量消费大小 |
+| `auto_start` | `bool` | 否 | 是否自动启动消费者 |
+
+**成功响应** (200):
+```json
+{
+  "status": "updated",
+  "config": {
+    "backend": "memory",
+    "maxsize": 20000,
+    "max_retries": 5,
+    "retry_delay": 10,
+    "batch_size": 20,
+    "auto_start": true
+  }
+}
+```
+
+### 3.9 启动消费者
+
+**端点**: `POST /api/v1/queue/start`
+
+**成功响应** (200):
+```json
+{
+  "status": "started"
+}
+```
+
+### 3.10 停止消费者
+
+**端点**: `POST /api/v1/queue/stop`
+
+**查询参数**:
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `wait` | `bool` | 否 | `true` | 是否等待当前消息处理完成 |
+
+**成功响应** (200):
+```json
+{
+  "status": "stopped"
+}
+```
+
+### 3.11 查看消息列表
+
+**端点**: `GET /api/v1/queue/messages`
+
+**查询参数**:
+
+| 参数 | 类型 | 必填 | 默认值 | 说明 |
+|------|------|------|--------|------|
+| `status` | `string` | 否 | `null` | 按状态过滤：pending/processing/done/failed |
+| `topic` | `string` | 否 | `null` | 按主题过滤 |
+| `skip` | `int` | 否 | `0` | 分页偏移 |
+| `limit` | `int` | 否 | `20` | 每页数量（最大 100） |
+
+**成功响应** (200):
+```json
+{
+  "messages": [
+    {
+      "message_id": "msg_abc123",
+      "body": "crawl_task",
+      "status": "pending",
+      "priority": 5,
+      "topic": "crawl:high",
+      "created_at": "2024-06-15T10:30:00",
+      "retry_count": 0
+    }
+  ],
+  "total": 1
+}
+```
+
+### 3.12 清空队列
+
+**端点**: `POST /api/v1/queue/clear`
+
+**成功响应** (200):
+```json
+{
+  "status": "cleared",
+  "cleared_count": 42
+}
+```
+
+### 3.13 队列健康检查
+
+**端点**: `GET /api/v1/queue/health`
+
+**成功响应** (200):
+```json
+{
+  "status": "healthy",
+  "timestamp": "2024-06-15T10:30:00.123456",
+  "uptime_seconds": 3600.5,
+  "issues": [],
+  "stats": {
+    "pending": 10,
+    "processing": 2,
+    "completed": 140,
+    "failed": 3
+  }
+}
+```
+
+---
+
+## 4. 健康检查 API
+
+### 4.1 服务健康检查
+
+**端点**: `GET /health`
+
+**成功响应** (200):
+```json
+{
+  "status": "healthy"
+}
+```
+
+---
+
+## 5. 数据模型
+
+### 5.1 TsItem（教师/学生信息）
+
+**继承**: `scrapy.Item`
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `title` | `scrapy.Field` | 是 | 标题 |
+| `name` | `scrapy.Field` | 是 | 姓名 |
+| `email` | `scrapy.Field` | 否 | 电子邮箱 |
+| `source_url` | `scrapy.Field` | 是 | 来源 URL |
+| `item_hash` | `scrapy.Field` | 自动 | MD5 去重哈希 |
+
+**方法**:
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `to_dict()` | `dict` | 转换为字典（过滤 None） |
+| `to_dict_all()` | `dict` | 转换为字典（包含所有字段） |
+| `validate()` | `bool` | 验证必填字段 |
+| `get_summary()` | `str` | 获取摘要信息 |
+
+### 5.2 CourseItem（课程信息）
+
+**继承**: `scrapy.Item`
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `course_id` | `scrapy.Field` | 否 | 课程 ID |
+| `course_name` | `scrapy.Field` | 是 | 课程名称 |
+| `capacity` | `scrapy.Field` | 否 | 课程容量 |
+| `enrolled` | `scrapy.Field` | 否 | 已报名人数 |
+
+**方法**:
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `to_dict()` | `dict` | 转换为字典 |
+| `validate()` | `bool` | 验证必填字段 |
+| `get_occupancy_rate()` | `float` | 获取课程占用率 |
+
+### 5.3 ArticleItem（文章信息）
+
+**继承**: `scrapy.Item`
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `article_id` | `scrapy.Field` | 否 | 文章 ID |
+| `title` | `scrapy.Field` | 是 | 文章标题 |
+| `content` | `scrapy.Field` | 否 | 文章内容 |
+| `tags` | `scrapy.Field` | 否 | 标签列表 |
+
+**方法**:
+
+| 方法 | 返回值 | 说明 |
+|------|--------|------|
+| `to_dict()` | `dict` | 转换为字典 |
+| `validate()` | `bool` | 验证必填字段 |
+| `get_tags_list()` | `list` | 获取标签列表 |
+
+### 5.4 工具函数
+
+| 函数 | 说明 |
+|------|------|
+| `create_item(item_type, **kwargs)` | 工厂方法创建 Item |
+| `merge_items(base, override)` | 合并两个 Item |
+| `batch_validate(items)` | 批量验证 |
+| `deduplicate_items(items, key_field)` | 去重 |
+| `filter_items(items, **conditions)` | 过滤 |
+| `sort_items(items, key_field, reverse)` | 排序 |
+| `export_items_json(items, filepath)` | 导出为 JSON |
+| `export_items_csv(items, filepath)` | 导出为 CSV |
+
+---
+
+## 6. 错误码说明
+
+| HTTP 状态码 | 说明 | 常见原因 |
+|-------------|------|----------|
+| `200` | 请求成功 | - |
+| `201` | 创建成功 | 用户创建 |
+| `400` | 请求参数错误 | 消息格式无效、队列已满 |
+| `401` | 未认证 | Token 缺失或无效 |
+| `404` | 资源不存在 | 用户/消息不存在 |
+| `409` | 资源冲突 | 用户名已存在 |
+| `422` | 请求体验证失败 | 字段类型错误、缺少必填字段 |
+| `500` | 服务器内部错误 | 未预期的异常 |
+| `503` | 服务不可用 | 队列服务异常 |
+
+### 统一错误响应格式
+
+```json
+{
+  "detail": "错误描述信息"
+}
+```
+
+对于领域异常，格式为：
+```json
+{
+  "error": "DOMAIN_ERROR",
+  "message": "错误描述",
+  "status_code": 400
+}
+```
 # 接口API文档
 
 ## 项目概述
