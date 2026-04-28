@@ -10,6 +10,9 @@
 
 import scrapy
 from scrapy import Field, Item
+
+import scrapy
+from scrapy import Field, Item
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Union
 import hashlib
