@@ -21,6 +21,7 @@ from message_queue import (
     BaseQueue,
     BaseQueue,
     BaseQueue,
+    BaseQueue,
     InMemoryQueue,
     FileQueue,
     RedisQueue,
@@ -189,13 +190,13 @@ class QueueService(QueueServiceInterface):
 
         msg = self._consumer.receive(timeout=timeout)
         if msg is None:
-            return None
         self,
         max_count: Optional[int] = None,
         timeout: float = 0,
     ) -> List[QueueMessageDTO]:  # type: ignore[override]
         """批量接收消息
 
+        Args:
         Args:
         Args:
         Args:
@@ -358,7 +359,6 @@ class QueueService(QueueServiceInterface):
             消息对象，未找到返回 None
         """
         if not isinstance(self._queue, InMemoryQueue):
-            logger.warning(f"当前队列后端不支持按 ID 查找处理中消息")
             return self._queue._processing.get(msg_id)
 
     @staticmethod
@@ -374,6 +374,7 @@ class QueueService(QueueServiceInterface):
         return QueueMessageDTO(
             msg_id=msg.msg_id,
             body=msg.body,
+            status=msg.status.value,
             status=msg.status.value,
             status=msg.status.value,
             status=msg.status.value,
