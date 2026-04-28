@@ -586,7 +586,198 @@ curl -X POST http://localhost:8000/api/v1/queue/clear \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-### 4.4 错误处理
+### 4.4 队列服务层使用
+
+`QueueService` 位于 `src/api/services/queue_service.py`，是消息队列的业务逻辑封装层，提供比直接使用 `Producer`/`Consumer` 更高级的 API。
+
+#### 4.4.1 初始化队列服务
+
+```python
+from src.api.services.queue_service import QueueService
+from src.api.interfaces.queue_interface import QueueConfig
+
+# 使用默认配置（内存队列）
+service = QueueService()
+
+# 使用自定义配置
+config = QueueConfig(
+    backend='memory',       # 后端类型: memory/file/redis
+    maxsize=1000,           # 队列最大容量（0=无限制）
+    max_retries=3,          # 最大重试次数
+    retry_delay=5,          # 重试延迟（秒）
+    batch_size=10,          # 批量消费大小
+    auto_start=False,       # 是否自动启动消费者
+)
+service = QueueService(config)
+
+# 文件队列配置
+file_config = QueueConfig(
+    backend='file',
+    data_dir='/var/data/queue',
+    maxsize=0,
+)
+file_service = QueueService(file_config)
+
+# Redis 队列配置
+redis_config = QueueConfig(
+    backend='redis',
+    queue_name='my_queue',
+    redis_host='redis.example.com',
+    redis_port=6379,
+    redis_db=0,
+)
+redis_service = QueueService(redis_config)
+```
+
+#### 4.4.2 发送和接收消息
+
+```python
+# 发送消息
+msg_id = service.send_message(
+    body={"url": "https://example.com", "depth": 1},
+    priority=5,
+    topic="crawl:high",
+    max_retries=3,
+)
+print(f"消息已发送: {msg_id}")
+
+# 批量发送
+msg_ids = service.send_batch([
+    {"url": "https://example.com/1"},
+    {"url": "https://example.com/2"},
+    {"url": "https://example.com/3"},
+], priority=3, topic="crawl:normal")
+
+# 接收消息
+msg = service.receive_message(timeout=5.0)
+if msg:
+    print(f"收到消息: {msg.msg_id}, body={msg.body}")
+    # 确认处理完成
+    service.acknowledge_message(msg.msg_id)
+else:
+    print("队列为空")
+
+# 拒绝消息（重新入队重试）
+service.reject_message(msg_id, requeue=True)
+
+# 拒绝消息（标记为失败）
+service.reject_message(msg_id, requeue=False)
+```
+
+#### 4.4.3 设置消息处理器
+
+```python
+# 定义消息处理函数
+def my_handler(body):
+    """处理消息体，返回 True 表示成功，False 表示失败"""
+    print(f"处理消息: {body}")
+    # 模拟处理逻辑
+    if isinstance(body, dict) and "url" in body:
+        print(f"爬取: {body['url']}")
+        return True
+    return False
+
+# 注册处理器
+service.set_handler(my_handler)
+
+# 启动消费循环（在后台线程运行）
+service.start_consuming(interval=0.1)
+
+# 停止消费循环
+service.stop_consuming(wait=True)
+```
+
+#### 4.4.4 队列管理
+
+```python
+# 获取队列大小
+size = service.queue_size()
+print(f"待处理消息数: {size}")
+
+# 清空队列
+cleared = service.clear_queue()
+print(f"已清空 {cleared} 条消息")
+
+# 关闭服务
+service.close()
+```
+
+#### 4.4.5 全局单例模式
+
+`QueueService` 提供全局单例访问方式：
+
+```python
+from src.api.services.queue_service import get_queue_service, get_queue_monitor
+
+# 获取全局队列服务实例
+service = get_queue_service()
+
+# 获取全局队列监控实例
+monitor = get_queue_monitor()
+```
+
+### 4.5 队列监控使用
+
+`QueueMonitor` 位于 `src/api/services/queue_service.py`，提供队列运行状态监控。
+
+#### 4.5.1 获取统计信息
+
+```python
+from src.api.services.queue_service import QueueService, QueueMonitor
+
+service = QueueService()
+monitor = QueueMonitor(service)
+
+# 获取详细统计
+stats = monitor.get_stats()
+print(f"待处理: {stats.pending_count}")
+print(f"处理中: {stats.processing_count}")
+print(f"已完成: {stats.completed_count}")
+print(f"失败: {stats.failed_count}")
+print(f"消费者运行中: {stats.is_running}")
+print(f"后端类型: {stats.backend}")
+print(f"运行时长: {stats.uptime_seconds:.1f} 秒")
+```
+
+#### 4.5.2 健康检查
+
+```python
+# 健康检查
+health = monitor.health_check()
+print(f"状态: {health['status']}")
+print(f"运行时长: {health['uptime_seconds']} 秒")
+if health['issues']:
+    print(f"告警: {health['issues']}")
+```
+
+**健康检查返回格式：**
+
+```json
+{
+  "status": "healthy",
+  "timestamp": "2024-06-15T10:30:00.123456",
+  "uptime_seconds": 3600.0,
+  "issues": [],
+  "stats": {
+    "pending": 15,
+    "processing": 3,
+    "completed": 120,
+    "failed": 2,
+    "is_running": true,
+    "backend": "memory"
+  }
+}
+```
+
+**健康检查告警条件：**
+
+| 条件 | 告警信息 |
+|------|----------|
+| 队列未初始化 | "队列未初始化" |
+| 待处理消息 > 1000 | "消息积压: N 条待处理" |
+| 失败率 > 10% | "失败率过高: N%" |
+
+### 4.6 错误处理
 
 所有 API 错误返回统一格式：
 
@@ -970,7 +1161,56 @@ for i in range(10):
 print(f"成功发送 {queue.size()} 条消息")
 ```
 
-### 5.9 便捷工厂函数
+### 5.9 消息队列与 API 集成
+
+消息队列 API 端点通过 `QueueService` 与底层队列交互，完整的请求流程如下：
+
+```
+HTTP 请求 → QueueController → QueueService → Producer/Consumer → BaseQueue
+```
+
+**队列配置通过 `QueueConfig` 数据类管理：**
+
+```python
+from src.api.interfaces.queue_interface import QueueConfig
+
+# 默认配置
+config = QueueConfig()
+
+# 各字段说明
+config.backend       = "memory"    # 后端类型: memory/file/redis
+config.maxsize       = 0           # 最大容量（0=无限制）
+config.max_retries   = 3           # 最大重试次数
+config.retry_delay   = 5           # 重试延迟（秒）
+config.batch_size    = 10          # 批量消费大小
+config.auto_start    = False       # 是否自动启动消费者
+config.data_dir      = None        # 文件队列数据目录
+config.queue_name    = None        # Redis 队列名称
+config.redis_host    = None        # Redis 主机
+config.redis_port    = None        # Redis 端口
+config.redis_db      = None        # Redis 数据库编号
+config.redis_password = None       # Redis 密码
+```
+
+**消息 DTO (`QueueMessageDTO`) 数据结构：**
+
+```python
+from src.api.interfaces.queue_interface import QueueMessageDTO
+
+dto = QueueMessageDTO(
+    msg_id="uuid-string",       # 消息唯一 ID
+    body={"key": "value"},      # 消息内容
+    status="pending",           # 消息状态
+    created_at="2024-...",      # 创建时间
+    updated_at="2024-...",      # 更新时间
+    retry_count=0,              # 已重试次数
+    max_retries=3,              # 最大重试次数
+    error=None,                 # 错误信息
+    priority=0,                 # 优先级
+)
+```
+
+### 5.10 便捷工厂函数
 
 `message_queue.py` 第 899-943 行提供了两个便捷工厂函数：
 
@@ -1134,46 +1374,250 @@ if article.has_attachments():
     print(f"包含 {len(files)} 个附件")
 ```
 
-### 6.5 批量操作工具
+### 6.5 辅助函数详解
+
+`items.py` 提供了 8 个辅助函数，用于批量操作和数据导出。
+
+#### 6.5.1 create_item — 工厂函数
+
+```python
+from items import create_item
+
+# 创建 TsItem
+ts = create_item('ts', title="教授", name="张三", department="计算机系")
+
+# 创建 CourseItem
+course = create_item('course', course_name="数据结构", teacher_name="李四")
+
+# 创建 ArticleItem
+article = create_item('article', title="Python 教程", author="王五")
+
+# 错误类型
+try:
+    create_item('unknown', title="无效")
+except ValueError as e:
+    print(e)  # 输出: Unsupported item type: unknown...
+```
+
+**参数说明：**
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| `item_type` | `str` | 是 | 类型名称：`'ts'`、`'course'`、`'article'` |
+| `**kwargs` | `Any` | 否 | 对应 Item 的字段键值对 |
+
+#### 6.5.2 merge_items — 合并 Item
+
+```python
+from items import merge_items, TsItem
+
+# 合并两个 TsItem
+base = TsItem(title="教授", name="张三", email="old@example.com")
+override = TsItem(email="new@example.com", phone="13800138000")
+merged = merge_items(base, override)
+
+print(merged['title'])    # 输出: 教授（保留 base 的值）
+print(merged['email'])    # 输出: new@example.com（被 override 覆盖）
+print(merged['phone'])    # 输出: 13800138000（来自 override）
+
+# 类型不一致会抛出 TypeError
+try:
+    merge_items(TsItem(), CourseItem())
+except TypeError as e:
+    print(e)  # 类型不匹配错误
+```
+
+#### 6.5.3 batch_validate — 批量验证
+
+```python
+from items import batch_validate, TsItem, CourseItem
+
+items = [
+    TsItem(title="教授", name="张三"),     # 有效
+    TsItem(),                               # 无效（缺少 title 和 name）
+    CourseItem(course_name="数据结构"),      # 有效
+    CourseItem(),                           # 无效（缺少 course_name）
+]
+
+result = batch_validate(items)
+print(f"有效: {len(result['valid'])} 条")    # 输出: 2
+print(f"无效: {len(result['invalid'])} 条")  # 输出: 2
+
+# 查看无效项
+for item in result['invalid']:
+    print(f"无效项: {type(item).__name__}")
+```
+
+#### 6.5.4 items_to_dicts — 批量转字典
+
+```python
+from items import items_to_dicts, TsItem
+
+items = [
+    TsItem(title="教授", name="张三", email="zhang@test.com"),
+    TsItem(title="副教授", name="李四"),
+]
+
+# 过滤 None 值
+dicts = items_to_dicts(items, exclude_none=True)
+for d in dicts:
+    print(d.keys())  # 只包含有值的字段
+
+# 保留所有字段
+dicts_all = items_to_dicts(items, exclude_none=False)
+for d in dicts_all:
+    print(d.keys())  # 包含所有字段（值为 None 的字段也在内）
+```
+
+#### 6.5.5 deduplicate_items — 去重
+
+```python
+from items import deduplicate_items, TsItem
+
+items = [
+    TsItem(title="教授", name="张三", item_hash="abc"),
+    TsItem(title="教授", name="张三", item_hash="abc"),  # 重复
+    TsItem(title="副教授", name="李四", item_hash="def"),
+]
+
+# 按 item_hash 去重
+unique = deduplicate_items(items, key_field='item_hash')
+print(f"去重后: {len(unique)} 条")  # 输出: 2
+
+# 不指定 key_field 时使用 repr
+unique2 = deduplicate_items(items)
+```
+
+#### 6.5.6 filter_items — 过滤
+
+```python
+from items import filter_items, TsItem
+
+items = [
+    TsItem(title="教授", name="张三", status="active", department="CS"),
+    TsItem(title="副教授", name="李四", status="active", department="Math"),
+    TsItem(title="讲师", name="王五", status="inactive", department="CS"),
+]
+
+# 过滤出 active 状态的
+active = filter_items(items, status='active')
+print(f"活跃用户: {len(active)}")  # 输出: 2
+
+# 多条件过滤
+cs_active = filter_items(items, status='active', department='CS')
+print(f"CS 系活跃用户: {len(cs_active)}")  # 输出: 1
+```
+
+#### 6.5.7 sort_items — 排序
+
+```python
+from items import sort_items, TsItem
+
+items = [
+    TsItem(title="教授", name="张三"),
+    TsItem(title="副教授", name="李四"),
+    TsItem(title="讲师", name="王五"),
+]
+
+# 按 title 升序
+sorted_asc = sort_items(items, key_field='title')
+for item in sorted_asc:
+    print(item['title'])  # 输出: 副教授, 讲师, 教授
+
+# 按 title 降序
+sorted_desc = sort_items(items, key_field='title', reverse=True)
+for item in sorted_desc:
+    print(item['title'])  # 输出: 教授, 讲师, 副教授
+```
+
+#### 6.5.8 export_items_json — 导出 JSON
+
+```python
+from items import export_items_json, TsItem
+
+items = [
+    TsItem(title="教授", name="张三", email="zhang@test.com"),
+    TsItem(title="副教授", name="李四", email="li@test.com"),
+]
+
+# 导出为 JSON 文件
+export_items_json(items, 'output.json')
+
+# 指定编码和缩进
+export_items_json(items, 'output.json', ensure_ascii=False, indent=4)
+
+# 查看输出文件内容
+# cat output.json
+# [
+#   {
+#     "title": "教授",
+#     "name": "张三",
+#     "email": "zhang@test.com",
+#     ...
+#   },
+#   ...
+# ]
+```
+
+#### 6.5.9 export_items_csv — 导出 CSV
+
+```python
+from items import export_items_csv, TsItem
+
+items = [
+    TsItem(title="教授", name="张三", email="zhang@test.com", department="CS"),
+    TsItem(title="副教授", name="李四", email="li@test.com", department="Math"),
+]
+
+# 导出所有字段
+export_items_csv(items, 'output.csv')
+
+# 只导出指定字段
+export_items_csv(items, 'output.csv', fields=['title', 'name', 'email'])
+
+# 查看输出文件内容
+# cat output.csv
+# title,name,email,department
+# 教授,张三,zhang@test.com,CS
+# 副教授,李四,li@test.com,Math
+```
+
+### 6.6 完整工作流示例
 
 ```python
 from items import (
-    create_item, merge_items, batch_validate,
-    items_to_dicts, deduplicate_items,
-    filter_items, sort_items,
-    export_items_json, export_items_csv
+    TsItem, CourseItem, ArticleItem,
+    create_item, batch_validate, deduplicate_items,
+    filter_items, export_items_json
 )
 
-# 工厂函数创建 Item
-ts_item = create_item('ts', title="教授", name="张三")
-course_item = create_item('course', course_name="数据结构")
+# 1. 创建爬虫数据
+ts_items = [
+    TsItem(title="教授", name="张三", email="zhang@test.com", department="计算机系"),
+    TsItem(title="副教授", name="李四", email="li@test.com", department="数学系"),
+    TsItem(),  # 无效数据
+]
 
-# 合并两个 Item
-base = TsItem(title="教授", name="张三")
-override = TsItem(email="new@example.com")
-merged = merge_items(base, override)
-print(merged['email'])  # 输出: new@example.com
+course_items = [
+    CourseItem(course_id="CS101", course_name="数据结构", teacher_name="张三"),
+    CourseItem(course_id="MATH201", course_name="高等数学", teacher_name="李四"),
+]
 
-# 批量验证
-items = [TsItem(title="有效"), TsItem()]
-result = batch_validate(items)
-print(f"有效: {len(result['valid'])}, 无效: {len(result['invalid'])}")
+# 2. 批量验证
+valid_ts = batch_validate(ts_items)['valid']
+print(f"有效教师数据: {len(valid_ts)} 条")
 
-# 批量转字典
-dicts = items_to_dicts(items)
+# 3. 去重
+unique_ts = deduplicate_items(valid_ts, key_field='email')
 
-# 去重
-unique_items = deduplicate_items(items)
+# 4. 过滤
+cs_teachers = filter_items(unique_ts, department='计算机系')
 
-# 过滤
-active_items = filter_items(items, status='active')
+# 5. 导出
+export_items_json(cs_teachers, 'cs_teachers.json')
+export_items_json(course_items, 'courses.json')
 
-# 排序
-sorted_items = sort_items(items, key_field='title')
-
-# 导出
-export_items_json(items, 'output.json')
-export_items_csv(items, 'output.csv', fields=['title', 'name', 'email'])
+print("数据导出完成")
 ```
 
 ---
@@ -1222,7 +1666,53 @@ config = QueueConfig(
 )
 ```
 
-### 7.3 环境变量配置
+### 7.3 队列服务配置
+
+`QueueService` 通过 `QueueConfig` 数据类进行配置：
+
+```python
+from src.api.interfaces.queue_interface import QueueConfig
+
+# 完整配置项
+config = QueueConfig(
+    # === 通用配置 ===
+    backend="memory",          # 后端类型: "memory" / "file" / "redis"
+    maxsize=0,                 # 队列最大容量（0=无限制）
+    max_retries=3,             # 消息最大重试次数
+    retry_delay=5,             # 重试延迟（秒）
+    batch_size=10,             # 批量消费大小
+    auto_start=False,          # 是否自动启动消费者
+
+    # === 文件队列配置 ===
+    data_dir="/tmp/message_queue",  # 文件队列数据存储目录
+
+    # === Redis 队列配置 ===
+    queue_name="default_queue",     # Redis 队列名称
+    redis_host="localhost",         # Redis 主机地址
+    redis_port=6379,                # Redis 端口
+    redis_db=0,                     # Redis 数据库编号
+    redis_password=None,            # Redis 密码
+)
+```
+
+**配置项详细说明：**
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `backend` | `str` | `"memory"` | 队列后端类型，可选 `memory`/`file`/`redis` |
+| `maxsize` | `int` | `0` | 队列最大容量，`0` 表示无限制 |
+| `max_retries` | `int` | `3` | 消息处理失败最大重试次数 |
+| `retry_delay` | `int` | `5` | 重试延迟时间（秒） |
+| `batch_size` | `int` | `10` | 批量消费时每次拉取的消息数量 |
+| `auto_start` | `bool` | `False` | 初始化时是否自动启动消费者线程 |
+| `data_dir` | `Optional[str]` | `None` | 文件队列的数据存储目录路径 |
+| `queue_name` | `Optional[str]` | `None` | Redis 队列的名称 |
+| `redis_host` | `Optional[str]` | `None` | Redis 服务器主机地址 |
+| `redis_port` | `Optional[int]` | `None` | Redis 服务器端口 |
+| `redis_db` | `Optional[int]` | `None` | Redis 数据库编号 |
+| `redis_password` | `Optional[str]` | `None` | Redis 认证密码 |
+
+### 7.4 环境变量配置
 
 ```bash
 # .env 文件示例
@@ -1233,11 +1723,424 @@ JWT_EXPIRATION=3600
 LOG_LEVEL=INFO
 ```
 
+### 7.5 配置优先级
+
+```
+硬编码默认值 < QueueConfig 默认值 < 用户传入配置
+```
+
+配置加载顺序：
+1. `QueueConfig` 数据类定义的默认值
+2. 用户创建 `QueueConfig` 时传入的参数
+3. 调用 `QueueService(config)` 时传入的配置
+
 ---
 
-## 8. 常见问题
+## 8. 系统架构说明
 
-### 8.1 启动问题
+### 8.1 三层架构
+
+项目采用经典的三层架构设计，各层职责清晰：
+
+```
+┌──────────────────────────────────────────────────┐
+│                  API 层 (src/api/)                 │
+│  ┌──────────────┐  ┌────────────┐  ┌──────────┐  │
+│  │ Controllers   │  │ Middleware  │  │ Services │  │
+│  │ (路由/参数)   │  │ (认证/错误) │  │ (业务)   │  │
+│  └──────┬───────┘  └────────────┘  └────┬─────┘  │
+├─────────┼────────────────────────────────┼────────┤
+│         ▼                                ▼        │
+│  ┌─────────────────────────────────────────────┐  │
+│  │             服务层 (src/services/)            │  │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  │  │
+│  │  │AuthService│  │UserService│  │QueueService│ │  │
+│  │  └─────┬────┘  └────┬─────┘  └─────┬────┘  │  │
+│  │        │             │              │       │  │
+│  │  ┌─────┴─────────────┴──────────────┴───┐  │  │
+│  │  │        Exceptions (领域异常)          │  │  │
+│  │  └──────────────────────────────────────┘  │  │
+│  └─────────────────────────────────────────────┘  │
+├───────────────────────────────────────────────────┤
+│         ▼                                          │
+│  ┌─────────────────────────────────────────────┐  │
+│  │             数据层 (src/repositories/)        │  │
+│  │  ┌──────────────────────────────────────┐   │  │
+│  │  │         UserRepository               │   │  │
+│  │  │  (内存存储，可替换为数据库实现)        │   │  │
+│  │  └──────────────────────────────────────┘   │  │
+│  └─────────────────────────────────────────────┘  │
+├───────────────────────────────────────────────────┤
+│         ▼                                          │
+│  ┌─────────────────────────────────────────────┐  │
+│  │           数据模型 (src/models/)              │  │
+│  │  ┌──────────────────────────────────────┐   │  │
+│  │  │     User (dataclass)                │   │  │
+│  │  └──────────────────────────────────────┘   │  │
+│  └─────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────┘
+```
+
+### 8.2 各层职责
+
+| 层级 | 目录 | 职责 | 关键文件 |
+|------|------|------|----------|
+| **API 层** | `src/api/controllers/` | 路由定义、参数校验、HTTP 响应 | `auth_controller.py`, `user_controller.py`, `queue_controller.py` |
+| **API 层** | `src/api/middleware/` | 认证拦截、统一错误处理 | `auth_middleware.py`, `error_handler.py` |
+| **API 层** | `src/api/services/` | 队列业务逻辑封装 | `queue_service.py` |
+| **API 层** | `src/api/interfaces/` | 接口契约定义（DTO、抽象类） | `queue_interface.py`, `dto_interface.py` |
+| **服务层** | `src/services/` | 核心业务逻辑 | `auth_service.py`, `user_service.py`, `exceptions.py` |
+| **数据层** | `src/repositories/` | 数据持久化抽象 | `user_repository.py` |
+| **数据模型** | `src/models/` | 领域模型定义 | `user.py` |
+
+### 8.3 请求处理流程
+
+```
+客户端请求
+    │
+    ▼
+┌─────────────────────┐
+│   FastAPI 路由匹配   │  ← src/main.py 中注册的路由
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────┐
+│  认证中间件验证 Token │  ← auth_middleware.py (HTTPBearer)
+│  (401 未认证)        │
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────┐
+│  控制器处理请求       │  ← 参数校验、调用服务层
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────┐
+│  服务层执行业务逻辑   │  ← 调用仓储层、抛出领域异常
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────┐
+│  仓储层操作数据       │  ← 内存/数据库 CRUD
+└─────────┬───────────┘
+          │
+          ▼
+┌─────────────────────┐
+│  统一错误处理         │  ← error_handler.py 捕获异常
+│  返回 JSON 响应      │     映射为 HTTP 状态码
+└─────────────────────┘
+```
+
+### 8.4 依赖注入模式
+
+服务层通过构造函数接收仓储依赖，便于单元测试：
+
+```python
+# 服务层依赖注入示例
+class UserService:
+    def __init__(self, user_repo: Optional[UserRepository] = None):
+        # 允许外部注入，默认使用真实实现
+        self.user_repo = user_repo or UserRepository()
+
+# 测试时注入 Mock
+def test_create_user():
+    mock_repo = MagicMock(spec=UserRepository)
+    service = UserService(user_repo=mock_repo)
+    # ...
+```
+
+### 8.5 异常处理机制
+
+```
+领域异常 (DomainException)
+    ├── AuthenticationError (401)  — 认证失败
+    │
+    └── 其他领域异常 (400/409)     — 业务规则违反
+        ├── 用户名已存在 → 409
+        └── 参数无效 → 400
+
+统一错误响应格式:
+{
+    "error": "ERROR_CODE",
+    "message": "人类可读的错误描述",
+    "status_code": 400
+}
+```
+
+### 8.6 消息队列架构
+
+```
+┌──────────┐     ┌──────────────┐     ┌──────────┐
+│ Producer  │ ──▶ │   Queue      │ ──▶ │ Consumer  │
+│ (生产者)  │     │ (队列后端)    │     │ (消费者)  │
+└──────────┘     └──────┬───────┘     └──────────┘
+                        │
+            ┌───────────┼───────────┐
+            ▼           ▼           ▼
+      ┌─────────┐ ┌─────────┐ ┌─────────┐
+      │ InMemory │ │  File   │ │  Redis  │
+      │ (内存)   │ │ (文件)   │ │ (分布式)│
+      └─────────┘ └─────────┘ └─────────┘
+
+API 层封装:
+┌─────────────────────────────────────┐
+│         QueueController             │  ← REST API 端点
+├─────────────────────────────────────┤
+│         QueueService                │  ← 业务逻辑封装
+├─────────────────────────────────────┤
+│   Producer / Consumer / BaseQueue   │  ← 核心队列实现
+└─────────────────────────────────────┘
+```
+
+---
+
+## 9. 测试指南
+
+### 9.1 测试环境配置
+
+```bash
+# 安装测试依赖
+pip install pytest pytest-cov pytest-mock httpx
+
+# 验证 pytest 配置
+pytest --version
+# pytest 7.x
+```
+
+### 9.2 测试文件结构
+
+```
+python-AI/
+├── tests/                          # 单元测试目录
+│   ├── __init__.py
+│   ├── conftest.py                 # 共享 fixtures
+│   ├── test_items.py               # 爬虫数据模型测试
+│   ├── test_controllers.py         # API 控制器测试
+│   ├── test_integration.py         # 集成测试
+│   ├── test_middleware.py          # 中间件测试
+│   ├── test_repositories.py        # 仓储层测试
+│   └── test_services.py            # 服务层测试
+├── test_message_queue.py           # 消息队列测试（根目录）
+├── test_settings.py                # 配置测试（根目录）
+└── pytest.ini                      # pytest 配置
+```
+
+### 9.3 运行测试
+
+```bash
+# 运行所有测试
+pytest -v
+
+# 运行指定测试文件
+pytest tests/test_items.py -v
+pytest test_message_queue.py -v
+
+# 运行指定测试类
+pytest tests/test_items.py::TestTsItem -v
+
+# 运行指定测试函数
+pytest tests/test_items.py::test_ts_item_creation -v
+
+# 带覆盖率运行
+pytest --cov=. --cov-report=term-missing
+
+# 生成 HTML 覆盖率报告
+pytest --cov=. --cov-report=html
+open htmlcov/index.html
+
+# 显示 print 输出（调试用）
+pytest -v -s
+
+# 只运行标记的测试
+pytest -m "unit" -v
+pytest -m "integration" -v
+pytest -m "slow" -v
+```
+
+### 9.4 测试标记说明
+
+`pytest.ini` 中定义了以下测试标记：
+
+| 标记 | 说明 | 使用场景 |
+|------|------|----------|
+| `unit` | 单元测试（默认） | 单个函数/类测试 |
+| `integration` | 集成测试 | 模块间交互测试 |
+| `slow` | 慢速测试 | 需要较长时间的测试 |
+| `redis` | Redis 相关测试 | 需要 Redis 连接 |
+| `file_queue` | 文件队列测试 | 需要文件系统操作 |
+
+### 9.5 测试用例速查
+
+#### 消息队列测试 (`test_message_queue.py`)
+
+```bash
+# 运行消息队列测试
+pytest test_message_queue.py -v
+
+# 测试覆盖范围:
+# - Message 数据类创建、序列化、状态转换
+# - InMemoryQueue 入队出队、优先级排序、批量操作
+# - FileQueue 文件持久化、崩溃恢复
+# - RedisQueue 连接、发送接收（需 Redis）
+# - Producer/Consumer 生产消费流程
+# - 异常处理（队列满、队列空）
+```
+
+#### 爬虫数据模型测试 (`tests/test_items.py`)
+
+```bash
+# 运行数据模型测试
+pytest tests/test_items.py -v
+
+# 测试覆盖范围:
+# - TsItem 创建、字段自动填充、哈希生成
+# - CourseItem 课程容量、占用率计算
+# - ArticleItem 标签解析、附件列表
+# - 辅助函数：create_item, merge_items, batch_validate
+# - 导出功能：export_items_json, export_items_csv
+```
+
+#### API 控制器测试 (`tests/test_controllers.py`)
+
+```bash
+# 运行控制器测试
+pytest tests/test_controllers.py -v
+
+# 测试覆盖范围:
+# - 登录端点（成功/失败）
+# - 用户创建（成功/用户名冲突）
+# - 用户查询（成功/未找到）
+# - 消息队列 API 端点
+```
+
+#### 服务层测试 (`tests/test_services.py`)
+
+```bash
+# 运行服务层测试
+pytest tests/test_services.py -v
+
+# 测试覆盖范围:
+# - AuthService 认证逻辑
+# - UserService 用户 CRUD
+# - 异常抛出场景
+```
+
+#### 仓储层测试 (`tests/test_repositories.py`)
+
+```bash
+# 运行仓储层测试
+pytest tests/test_repositories.py -v
+
+# 测试覆盖范围:
+# - UserRepository CRUD 操作
+# - 按 ID/用户名查找
+# - 删除操作
+```
+
+#### 中间件测试 (`tests/test_middleware.py`)
+
+```bash
+# 运行中间件测试
+pytest tests/test_middleware.py -v
+
+# 测试覆盖范围:
+# - 认证中间件（有效 Token / 无效 Token / 缺失 Token）
+# - 错误处理中间件（领域异常 / 通用异常）
+```
+
+#### 集成测试 (`tests/test_integration.py`)
+
+```bash
+# 运行集成测试
+pytest tests/test_integration.py -v
+
+# 测试覆盖范围:
+# - 完整用户注册登录流程
+# - 消息队列端到端流程
+```
+
+### 9.6 编写测试示例
+
+```python
+# tests/test_items.py 示例
+import pytest
+from items import TsItem, CourseItem, ArticleItem
+
+class TestTsItem:
+    """TsItem 数据模型测试"""
+
+    def test_creation_with_required_fields(self):
+        """测试使用必填字段创建 TsItem"""
+        item = TsItem(title="教授", name="张三")
+        assert item['title'] == "教授"
+        assert item['name'] == "张三"
+        assert item['status'] == "active"  # 自动填充
+        assert item['crawl_time'] is not None  # 自动填充
+
+    def test_auto_generated_hash(self):
+        """测试自动生成的 item_hash"""
+        item = TsItem(title="教授", name="张三", email="zhang@test.com")
+        assert item['item_hash'] is not None
+        assert len(item['item_hash']) == 32  # MD5 长度
+
+    @pytest.mark.parametrize("title,name,expected", [
+        ("教授", "张三", "教授 - 张三"),
+        ("", "张三", "张三"),
+        ("教授", "", "教授"),
+        ("", "", ""),
+    ])
+    def test_get_full_name(self, title, name, expected):
+        """测试 get_full_name 方法"""
+        item = TsItem(title=title, name=name)
+        assert item.get_full_name() == expected
+```
+
+### 9.7 测试 Fixtures 说明
+
+`tests/conftest.py` 中定义了共享 fixtures：
+
+```python
+# conftest.py 示例
+import pytest
+from items import TsItem, CourseItem, ArticleItem
+
+@pytest.fixture
+def sample_ts_item():
+    """创建一个示例 TsItem"""
+    return TsItem(
+        title="教授",
+        name="张三",
+        email="zhang@example.com",
+        department="计算机系"
+    )
+
+@pytest.fixture
+def sample_course_item():
+    """创建一个示例 CourseItem"""
+    return CourseItem(
+        course_id="CS101",
+        course_name="数据结构",
+        teacher_name="李四",
+        capacity=100,
+        enrolled=85
+    )
+
+@pytest.fixture
+def sample_article_item():
+    """创建一个示例 ArticleItem"""
+    return ArticleItem(
+        article_id="ART001",
+        title="Python 教程",
+        author="王五",
+        tags="python,编程,教程"
+    )
+```
+
+---
+
+## 10. 常见问题
+
+### 10.1 启动问题
 
 **Q: 启动时提示模块找不到**
 ```bash
