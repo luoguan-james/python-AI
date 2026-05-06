@@ -20,10 +20,10 @@ from src.api.interfaces.queue_interface import (
 from src.api.middleware.auth_middleware import get_current_user
 from src.api.services.queue_service import QueueService
 
-router = APIRouter(prefix="/api/v1/queue", tags=["消息队列"])
+router = APIRouter(tags=["消息队列"])
 
 
-def get_queue_service() -> QueueServiceInterface:
+def get_queue_service() -> QueueService:
     """获取队列服务实例（依赖注入）。
 
     Returns:
