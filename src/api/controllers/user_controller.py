@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from src.services.user_service import UserService
 from src.api.middleware.auth_middleware import get_current_user
 
-router = APIRouter(prefix="/users", tags=["users"])
+router = APIRouter(tags=["users"])
 
 
 class CreateUserRequest(BaseModel):

@@ -88,6 +88,81 @@ class ErrorResponseDTO(BaseResponseDTO):
         if self.details:
             result["details"] = self.details
         return result
+
+
+class LoginRequestInterface(BaseRequestDTO):
+    """Interface for login request DTO.
+
+    Attributes:
+        username: User's username.
+        password: User's password.
+    """
+
+    username: str
+    password: str
+
+    def to_domain(self) -> Dict[str, Any]:
+        return {"username": self.username, "password": self.password}
+
+
+class LoginResponseInterface(BaseResponseDTO):
+    """Interface for login response DTO.
+
+    Attributes:
+        token: JWT token.
+        expires_in: Token expiration time in seconds.
+    """
+
+    token: str
+    expires_in: int
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"token": self.token, "expires_in": self.expires_in}
+
+
+class CreateUserRequestInterface(BaseRequestDTO):
+    """Interface for create user request DTO.
+
+    Attributes:
+        username: User's username.
+        email: User's email address.
+        password: User's password.
+    """
+
+    username: str
+    email: str
+    password: str
+
+    def to_domain(self) -> Dict[str, Any]:
+        return {
+            "username": self.username,
+            "email": self.email,
+            "password": self.password,
+        }
+
+
+class UserResponseInterface(BaseResponseDTO):
+    """Interface for user response DTO.
+
+    Attributes:
+        id: User's unique identifier.
+        username: User's username.
+        email: User's email address.
+        created_at: User creation timestamp.
+    """
+
+    id: int
+    username: str
+    email: str
+    created_at: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "username": self.username,
+            "email": self.email,
+            "created_at": self.created_at,
+        }
 """DTO (Data Transfer Object) interface definitions.
 
 This module defines abstract base classes and protocols for all DTOs

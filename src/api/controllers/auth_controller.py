@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 from src.services.auth_service import AuthService
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+router = APIRouter(tags=["auth"])
 
 
 class LoginRequest(BaseModel):

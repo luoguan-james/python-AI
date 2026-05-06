@@ -340,12 +340,70 @@ class QueueService(QueueServiceInterface):
         return count
 
     def close(self):
-        """关闭队列服务，释放资源"""
-        if self._running:
-            self.stop_consuming()
-        if self._queue is not None:
             self._queue.close()
         logger.info("队列服务已关闭")
+
+    # ---- 接口方法（get_config / update_config / list_messages） ----
+
+    def get_config(self) -> QueueConfig:
+        """获取队列配置"""
+        return self._config
+
+    def update_config(self, config: QueueConfig):
+        """更新队列配置"""
+        self._config = config
+        logger.info(f"队列配置已更新: backend={config.backend}, maxsize={config.maxsize}")
+
+    def list_messages(
+        self,
+        status: Optional[str] = None,
+        topic: Optional[str] = None,
+        skip: int = 0,
+        limit: int = 20,
+    ) -> tuple:
+        """列出消息
+
+        Args:
+            status: 按状态过滤（pending/processing/done/failed）
+            topic: 按主题过滤
+            skip: 跳过的消息数
+            limit: 返回的消息数
+
+        Returns:
+            (消息列表, 总数) 的元组
+        """
+        if not isinstance(self._queue, InMemoryQueue):
+            return ([], 0)
+
+        all_messages: List[Message] = []
+        with self._queue._lock:
+            # 待处理消息
+            for msg in self._queue._messages:
+                all_messages.append(msg)
+            # 处理中消息
+            for msg in self._queue._processing.values():
+                all_messages.append(msg)
+            # 历史消息
+            for msg in self._queue._history:
+                all_messages.append(msg)
+
+        # 按状态过滤
+        if status:
+            filtered = [m for m in all_messages if m.status.value == status]
+        else:
+            filtered = list(all_messages)
+
+        # 按主题过滤
+        if topic:
+            filtered = [m for m in filtered if hasattr(m, 'topic') and m.topic == topic]
+
+        total = len(filtered)
+        paginated = filtered[skip:skip + limit]
+        return ([self._message_to_dto(m) for m in paginated], total)
+
+    # ---- 内部辅助方法 ----
+
+    def _find_processing_message(self, msg_id: str) -> Optional[Message]:
 
     # ---- 内部辅助方法 ----
 
